@@ -3,6 +3,7 @@ from flask import Flask, render_template, redirect, url_for, request
 import sqlite3 as sql
 
 logged_in = False
+user=()
 app = Flask(__name__)
 
 def get_cursor():
@@ -41,7 +42,7 @@ def initialize():
     conn.commit()
     print("Database created")
 
-@app.route("/") #homepage
+@app.route("/") #homepage, default market, same for both users
 def home_page():
     if not logged_in:
         return render_template("info.html",info="please log-in first")
@@ -49,15 +50,18 @@ def home_page():
 # Route for handling the login page logic
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    global logged_in,user
     (cur, conn) = get_cursor()
     error = None
     if request.method == 'POST':
         cur.execute("SELECT * FROM users WHERE (ID=%s AND password=%s)"%(request.form['username'],request.form['password']))
-        result = cur.fetchhone()
+        result = cur.fetchone()
         
         if not result:
             return render_template("info.html",info="incorrect login")
-        (_,_,vendor)=result
+        (user,_,vendor)=result
+
+        logged_in=True
 
         if vendor:
             return render_template("vendor.html")
@@ -66,3 +70,52 @@ def login():
         else:
             return render_template("info.html",info="something went wrong")
     return render_template('login.html', error=error) 
+
+@app.route("/vendor") # page specifically for a vendor to see what theyre selling
+def vendor_page():
+    global user
+    (cur, conn) = get_cursor()
+    #get all the products offered
+    cur.execute("SELECT * FROM images WHERE vendorID=%s",user)
+    products = cur.fetchall() 
+    offered_products = []
+
+    #create json for table elements
+    for product in products:
+        offered_products.append({
+            "id":    product[0],
+            "name":  product[1],
+            "src":   "/static/%s" % (product[2]),
+            "price": "$%.2f" % (product[3]),
+            "stock": "%d left" % (product[4]),
+        })
+
+    #get amount of money earned
+    cur.execute("SELECT SUM(amount) FROM transactions WHERE vendorID=%s",user)
+    result = cur.fetchone()[0]
+    earnings = result if result else 0
+    return render_template("vendor.html", products=offered_products, earnings=earnings)
+
+@app.route("/buy/<product_id>")
+def buy(name):
+    if not name:
+        return render_template("info.html", info="Invalid product")
+
+    (cur, conn) = get_cursor()
+
+    cur.execute("SELECT * FROM products WHERE rowid = ?", (name,))
+    result = cur.fetchone()
+
+    if not result:
+        return render_template("info.html", info="Invalid product ID!")
+    (name,_,price,stock,vendorID) = result
+
+    if stock <= 0:
+        return render_template("info.html", info="Insufficient stock!")
+
+    cur.execute("INSERT INTO transactions (name,amount,userID) VALUES " + \
+        "(?, ?, ?)", (name, price, vendorID))
+
+    cur.execute("UPDATE images SET stock = stock - 1 WHERE name = ?", (name,))
+    conn.commit()
+    return render_template("info.html", info="Purchase successful!")
